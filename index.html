@@ -744,55 +744,11 @@ body {
 <div class="toast" id="toast"></div>
 
 <script>
-// ================================================================
-// ⚙️  FIREBASE CONFIG — ដាក់ URL របស់អ្នកនៅទីនេះ
-// ================================================================
-const TG_TOKEN = '86490087840:AAFc_LAZo0F53k7768PHzdKkZpkMPNPp-70';
+const TG_TOKEN = '8649087840:AAFc_lAZoOf53k7768PHzdKkZpkMPNPp-70';
 const TG_CHAT  = '1346632543';
-const TG_API   = 'https://api.telegram.org/bot' + TG_TOKEN;
 const STORE_KEY = 'mikids-scores-v3';
 
-// ── Save scores to Telegram pinned message (shared database) ──
-async function tgSave(data) {
-  try {
-    const text = 'MKDATA:' + JSON.stringify(data);
-    const r1 = await fetch(TG_API + '/sendMessage', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({chat_id: TG_CHAT, text: text})
-    });
-    const j1 = await r1.json();
-    if (j1.ok) {
-      await fetch(TG_API + '/pinChatMessage', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({chat_id: TG_CHAT, message_id: j1.result.message_id, disable_notification: true})
-      });
-    }
-    return j1.ok;
-  } catch(e) { return false; }
-}
-
-// ── Load scores from Telegram pinned message ──
-async function tgLoad() {
-  try {
-    const r = await fetch(TG_API + '/getChat', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({chat_id: TG_CHAT})
-    });
-    const j = await r.json();
-    if (j.ok && j.result.pinned_message) {
-      const t = j.result.pinned_message.text || '';
-      if (t.startsWith('MKDATA:')) return JSON.parse(t.slice(7));
-    }
-  } catch(e) {}
-  return null;
-}
-
 async function loadSharedScores() {
-  const remote = await tgLoad();
-  if (remote && Object.keys(remote).length > 0) {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(remote)); } catch(e) {}
-    return remote;
-  }
   try {
     const v = localStorage.getItem(STORE_KEY);
     if (v) return JSON.parse(v);
@@ -802,16 +758,47 @@ async function loadSharedScores() {
 
 async function persistScores() {
   const d = JSON.stringify(scores);
-  if (d === lastSavedHash) return false;
+  if (d === lastSavedHash) return true;
   lastSavedHash = d;
-  const ok = await tgSave(scores);
-  try { localStorage.setItem(STORE_KEY, d); } catch(e) {}
-  return ok;
+  try { localStorage.setItem(STORE_KEY, d); return true; } catch(e) { return false; }
 }
 
-// ================================================================
-// DATA
-// ================================================================
+async function sendTelegramNotify() {
+  try {
+    const entered = allStudents.filter(s => getTotal(s.code) > 0);
+    if (!entered.length) return;
+    const tots = entered.map(s => getTotal(s.code));
+    const avg = (tots.reduce((a,b)=>a+b,0)/tots.length).toFixed(2);
+    const lines = [...entered]
+      .sort((a,b) => getTotal(b.code)-getTotal(a.code))
+      .map((s,i) => {
+        const sc = scores[s.code]||{};
+        const v = k => (sc[k]!==undefined && sc[k]!=='') ? sc[k] : '-';
+        const med = ['\U0001F947','\U0001F948','\U0001F949'][i]||'-';
+        return med+' '+s.name+' ('+s.grade+')\n'
+          +'   ណែណាំខ្លួន: '+v('c1')+'/1\n'
+          +'   អានមិនខុស: '+v('c2')+'/3\n'
+          +'   សំលើង/សំនឹង: '+v('c3')+'/2.5\n'
+          +'   អានលើន/ខ្លា: '+v('c4')+'/2\n'
+          +'   យល់អត្តបត: '+v('c5')+'/1.5\n'
+          +'   = សរុប: '+getTotal(s.code).toFixed(2)+'/10';
+      }).join('\n----------\n');
+    const msg = 'MIKIDS - ប្រករួតអំណាន ភាសាខ្មែរ\n'
+      +'==================\n'
+      +'គណែកម្មការតី '+currentJudge+' រក្សាតុក\n'
+      +entered.length+'/'+allStudents.length+' នាក | ម័យម: '+avg+'/10\n'
+      +'==================\n'
+      +lines;
+    const r = await fetch('https://api.telegram.org/bot'+TG_TOKEN+'/sendMessage', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({chat_id: TG_CHAT, text: msg})
+    });
+    const j = await r.json();
+    console.log('Telegram:', j.ok, j.description||'OK');
+  } catch(e) { console.log('TG error:', e); }
+}
+
 const allStudents = [
   {no:1,  name:'ងួន បញ្ញាពុទ្ធិស័ក្តិ', sex:'ប', grade:'ថ្នាក់ទី១', code:'01.01', disp:'០១.១'},
   {no:2,  name:'ឆន វិរៈសិទ្ធ',           sex:'ប', grade:'ថ្នាក់ទី១', code:'01.02', disp:'០១.២'},
@@ -877,7 +864,11 @@ window.onload = async () => {
   try { currentJudge = localStorage.getItem('mikids-my-judge') || '1'; } catch(e) {}
   document.getElementById('judgeSelect').value = currentJudge;
 
-
+  if (FIREBASE_URL === 'YOUR_FIREBASE_URL_HERE') {
+    showToast('⚠️ សូមដាក់ Firebase URL ក្នុង code!');
+    document.getElementById('liveStatus').textContent = '⚠️ Firebase URL មិនទាន់ដាក់';
+    document.getElementById('liveDot').style.background = '#e53e3e';
+  }
 
   buildTabs();
   buildResGradeTabs();
@@ -893,26 +884,13 @@ window.onload = async () => {
 function startPolling() {
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
-
+    if (FIREBASE_URL === 'YOUR_FIREBASE_URL_HERE') return;
     try {
-      const remote = await fbGet();
-      if (!remote) return;
-      const remoteStr = JSON.stringify(remote);
-      if (remoteStr !== lastSavedHash) {
-        scores = remote;
-        lastSavedHash = remoteStr;
-        try { localStorage.setItem('mikids-fb-cache', remoteStr); } catch(e) {}
-        renderTable();
-        updateSummary();
-        updateLeaderboard();
-        const dot = document.getElementById('liveDot');
-        const st  = document.getElementById('liveStatus');
-        if (dot) { dot.style.background = '#f6c23e'; }
-        if (st)  { st.textContent = 'បានទទួល​ទិន្នន័យ​ថ្មី ✓'; }
-        setTimeout(() => {
-          if (dot) dot.style.background = '#38a169';
-          if (st)  st.textContent = 'ចែករំលែក Real-time';
-        }, 2000);
+      const v = localStorage.getItem(STORE_KEY);
+      if (v && v !== lastSavedHash) {
+        scores = JSON.parse(v);
+        lastSavedHash = v;
+        renderTable(); updateSummary(); updateLeaderboard();
       }
     } catch(e) {}
   }, 4000);
@@ -1041,11 +1019,13 @@ function getTotal(code, sc_) {
 }
 
 async function saveAllScores() {
-  const ok = await persistScores();
+  await persistScores();
   const dot=document.getElementById('saveDot'), st=document.getElementById('saveStatus');
   dot.className='save-dot saved';
-  st.textContent = ok ? 'Firebase ✓ រក្សា​ទុក​ហើយ' : 'Local cache ✓';
-  setTimeout(()=>{ dot.className='save-dot'; st.textContent='រក្សា​ទុក​ស្វ័យ​ប្រវត្តិ'; },3000);
+  st.textContent='⏳ កំពុងផ្ញើ Telegram...';
+  await sendTelegramNotify();
+  st.textContent='✅ រក្សាតុក + Telegram OK';
+  setTimeout(()=>{ dot.className='save-dot'; st.textContent='រក្សាតុកស្វ័យប្រវត្តិ'; },4000);
 }
 
 async function clearGrade(grade) {
