@@ -747,45 +747,54 @@ body {
 // ================================================================
 // ⚙️  FIREBASE CONFIG — ដាក់ URL របស់អ្នកនៅទីនេះ
 // ================================================================
-const FIREBASE_URL = 'https://mikids-scores-default-rtdb.firebaseio.com';
 const TG_TOKEN = '86490087840:AAFc_LAZo0F53k7768PHzdKkZpkMPNPp-70';
 const TG_CHAT  = '1346632543';
-// ឧទាហរណ៍: 'https://mikids-scores-default-rtdb.firebaseio.com'
-// ================================================================
+const TG_API   = 'https://api.telegram.org/bot' + TG_TOKEN;
+const STORE_KEY = 'mikids-scores-v3';
 
-const DB_PATH = '/mikids-scores-v2.json';
-
-async function fbGet() {
+// ── Save scores to Telegram pinned message (shared database) ──
+async function tgSave(data) {
   try {
-    const r = await fetch(FIREBASE_URL + DB_PATH);
-    if (!r.ok) return null;
-    const data = await r.json();
-    return data || {};
-  } catch(e) { return null; }
-}
-
-async function fbSet(data) {
-  try {
-    const r = await fetch(FIREBASE_URL + DB_PATH, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+    const text = 'MKDATA:' + JSON.stringify(data);
+    const r1 = await fetch(TG_API + '/sendMessage', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({chat_id: TG_CHAT, text: text})
     });
-    return r.ok;
+    const j1 = await r1.json();
+    if (j1.ok) {
+      await fetch(TG_API + '/pinChatMessage', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({chat_id: TG_CHAT, message_id: j1.result.message_id, disable_notification: true})
+      });
+    }
+    return j1.ok;
   } catch(e) { return false; }
 }
 
+// ── Load scores from Telegram pinned message ──
+async function tgLoad() {
+  try {
+    const r = await fetch(TG_API + '/getChat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({chat_id: TG_CHAT})
+    });
+    const j = await r.json();
+    if (j.ok && j.result.pinned_message) {
+      const t = j.result.pinned_message.text || '';
+      if (t.startsWith('MKDATA:')) return JSON.parse(t.slice(7));
+    }
+  } catch(e) {}
+  return null;
+}
+
 async function loadSharedScores() {
-  // Try Firebase first
-  const remote = await fbGet();
+  const remote = await tgLoad();
   if (remote && Object.keys(remote).length > 0) {
-    // Cache locally
-    try { localStorage.setItem('mikids-fb-cache', JSON.stringify(remote)); } catch(e) {}
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(remote)); } catch(e) {}
     return remote;
   }
-  // Fallback: localStorage cache (offline mode)
   try {
-    const v = localStorage.getItem('mikids-fb-cache');
+    const v = localStorage.getItem(STORE_KEY);
     if (v) return JSON.parse(v);
   } catch(e) {}
   return {};
@@ -793,12 +802,10 @@ async function loadSharedScores() {
 
 async function persistScores() {
   const d = JSON.stringify(scores);
-  if (d === lastSavedHash) return;
+  if (d === lastSavedHash) return false;
   lastSavedHash = d;
-  // Save to Firebase (real-time sync across all devices)
-  const ok = await fbSet(scores);
-  // Also cache locally
-  try { localStorage.setItem('mikids-fb-cache', d); } catch(e) {}
+  const ok = await tgSave(scores);
+  try { localStorage.setItem(STORE_KEY, d); } catch(e) {}
   return ok;
 }
 
@@ -870,11 +877,7 @@ window.onload = async () => {
   try { currentJudge = localStorage.getItem('mikids-my-judge') || '1'; } catch(e) {}
   document.getElementById('judgeSelect').value = currentJudge;
 
-  if (FIREBASE_URL === 'YOUR_FIREBASE_URL_HERE') {
-    showToast('⚠️ សូមដាក់ Firebase URL ក្នុង code!');
-    document.getElementById('liveStatus').textContent = '⚠️ Firebase URL មិនទាន់ដាក់';
-    document.getElementById('liveDot').style.background = '#e53e3e';
-  }
+
 
   buildTabs();
   buildResGradeTabs();
@@ -890,7 +893,7 @@ window.onload = async () => {
 function startPolling() {
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
-    if (FIREBASE_URL === 'YOUR_FIREBASE_URL_HERE') return;
+
     try {
       const remote = await fbGet();
       if (!remote) return;
@@ -1037,75 +1040,12 @@ function getTotal(code, sc_) {
   return any ? Math.round(sum*100)/100 : 0;
 }
 
-
-async function sendTelegram(msg) {
-  try {
-    await fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: TG_CHAT,
-        text: msg,
-        parse_mode: 'HTML'
-      })
-    });
-  } catch(e) {}
-}
-
 async function saveAllScores() {
   const ok = await persistScores();
   const dot=document.getElementById('saveDot'), st=document.getElementById('saveStatus');
   dot.className='save-dot saved';
   st.textContent = ok ? 'Firebase ✓ រក្សា​ទុក​ហើយ' : 'Local cache ✓';
   setTimeout(()=>{ dot.className='save-dot'; st.textContent='រក្សា​ទុក​ស្វ័យ​ប្រវត្តិ'; },3000);
-
-  // Send Telegram notification
-  if (ok) {
-    const judgeNum = currentJudge;
-    const entered = allStudents.filter(s => getTotal(s.code) > 0);
-    const tots = entered.map(s => getTotal(s.code));
-    const avg = tots.length ? (tots.reduce((a,b)=>a+b,0)/tots.length).toFixed(2) : '0';
-    const top3 = [...allStudents]
-      .map(s => ({...s, total: getTotal(s.code)}))
-      .filter(s => s.total > 0)
-      .sort((a,b) => b.total - a.total)
-      .slice(0, 3);
-    const top3text = top3.map((s,i) => {
-      const medals = ['🥇','🥈','🥉'];
-      return medals[i] + ' ' + s.name + ' — ' + s.total.toFixed(2);
-    }).join('\n');
-
-    // Build detail lines per student
-    const detailLines = entered
-      .sort((a,b) => getTotal(b.code) - getTotal(a.code))
-      .map((s,i) => {
-        const sc = scores[s.code] || {};
-        const c1 = sc.c1 !== undefined && sc.c1 !== '' ? sc.c1 : '—';
-        const c2 = sc.c2 !== undefined && sc.c2 !== '' ? sc.c2 : '—';
-        const c3 = sc.c3 !== undefined && sc.c3 !== '' ? sc.c3 : '—';
-        const c4 = sc.c4 !== undefined && sc.c4 !== '' ? sc.c4 : '—';
-        const c5 = sc.c5 !== undefined && sc.c5 !== '' ? sc.c5 : '—';
-        const tot = getTotal(s.code).toFixed(2);
-        const medals = ['🥇','🥈','🥉'];
-        const prefix = i < 3 ? medals[i] : '▪️';
-        return prefix + ' <b>' + s.name + '</b> (' + s.grade + ')\n'
-          + '   📌 ណែនាំខ្លួន: ' + c1 + '/1\n'
-          + '   📖 អានមិនខុស: ' + c2 + '/3\n'
-          + '   🎵 សំឡេង/សំនៀង: ' + c3 + '/2.5\n'
-          + '   ⚡ អានលឿន/ឃ្លា: ' + c4 + '/2\n'
-          + '   💡 យល់អត្ថបទ: ' + c5 + '/1.5\n'
-          + '   ✅ សរុប: <b>' + tot + '/10</b>';
-      }).join('\n─────────────\n');
-
-    const msg = '🏫 <b>MIKIDS — ប្រកួតអំណាន ភាសាខ្មែរ</b>\n'
-      + '━━━━━━━━━━━━━━━━\n'
-      + '👤 គណៈកម្មការទី ' + judgeNum + ' បានរក្សាទុក\n'
-      + '📊 បានបញ្ចូល: ' + entered.length + '/' + allStudents.length + ' នាក់\n'
-      + '📈 មធ្យមភាគ: ' + avg + '/10\n'
-      + '━━━━━━━━━━━━━━━━\n'
-      + detailLines;
-    sendTelegram(msg);
-  }
 }
 
 async function clearGrade(grade) {
@@ -1477,7 +1417,7 @@ function downloadCertPDF() {
 
 function exportCSV() {
   const headers = ['ល.រ','គោត្តនាម','ភេទ','ថ្នាក់','លេខ',
-    'ការណ្ណែន(1)','អានមិនខុស(3)','ការដាក់សំឡេង(2.5)','អានលឿន(2)','យល់(1.5)','សរុប(10)'];
+    'ការណែនាំខ្លួន(1)','អានមិនខុស(3)','ការដាក់សំឡេង(2.5)','អានលឿន(2)','យល់-ឆ្លើយសំណួរ(1.5)','សរុប(10)'];
   const rows = allStudents.map(s => {
     const sc = scores[s.code]||{};
     const vals = CRITERIA.map(c=>(sc[c.key]!==undefined&&sc[c.key]!=='')?sc[c.key]:'');
